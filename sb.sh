@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 精简 sing-box：VLESS-Reality(443)；每天北京时间 05:00 自动检查更新（失败自动回滚）；最后打印 v2rayN 链接
 # 再次运行 = 卸载本脚本装的旧版本并全新安装（密钥全部重新生成）
+# 服务器是中国 IP 时，下载/查版本自动走 ghfast.top 或 gh-proxy.com 镜像（随机选，失败换另一个，最后直连）
 # 可选环境变量：SNI=域名  SERVER_IP=公网IP  SB_VERSION=1.x.y
 set -e
 SNI=${SNI:-blog.lyrnox.com}
@@ -26,11 +27,21 @@ cat > /usr/local/bin/sb-update <<'EOF'
 #!/bin/sh
 B=/usr/local/bin/sing-box
 case $(uname -m) in x86_64) A=amd64;; aarch64) A=arm64;; *) echo "不支持的架构"; exit 1;; esac
-V=${SB_VERSION:-$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')}
+# 中国 IP：访问 GitHub 走镜像（随机选一个先试，失败换另一个，最后直连）
+CTRY=$(curl -fsS --max-time 5 https://ipinfo.io/country 2>/dev/null || curl -fsS --max-time 5 https://ipapi.co/country 2>/dev/null)
+case $CTRY in CN*) P=$(shuf -e https://ghfast.top/ https://gh-proxy.com/);; *) P=;; esac
+V=$SB_VERSION
+[ -n "$V" ] || for p in $P ""; do
+  V=$(curl -fsSL --max-time 15 "${p}https://api.github.com/repos/SagerNet/sing-box/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+  [ -n "$V" ] && break
+done
 [ -n "$V" ] || { echo "获取版本失败"; exit 1; }
 [ "$V" = "$($B version 2>/dev/null | sed -n '1s/^sing-box version //p')" ] && exit 0
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-linux-$A.tar.gz" | tar xz -C "$T" --strip-components=1 || exit 1
+for p in $P ""; do
+  curl -fsSL --max-time 180 "${p}https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-linux-$A.tar.gz" -o "$T/sb.tgz" && tar xzf "$T/sb.tgz" -C "$T" --strip-components=1 2>/dev/null && [ -f "$T/sing-box" ] && break
+done
+[ -f "$T/sing-box" ] || { echo "下载失败"; exit 1; }
 [ -s /etc/sing-box/config.json ] && ! "$T/sing-box" check -c /etc/sing-box/config.json && { echo "新版本与当前配置不兼容，跳过"; exit 1; }
 [ -x $B ] && cp $B $B.bak
 install -m755 "$T/sing-box" $B || { [ -f $B.bak ] && mv $B.bak $B; echo "安装失败"; exit 1; }
@@ -50,7 +61,7 @@ K=$($SB generate reality-keypair)
 PRIV=$(echo "$K" | awk '/PrivateKey/{print $2}')
 PUB=$(echo "$K" | awk '/PublicKey/{print $2}')
 SID=$($SB generate rand 8 --hex)
-IP=${SERVER_IP:-$(curl -4fsS --max-time 6 https://api.ipify.org || curl -4fsS --max-time 6 https://ip.sb || true)}
+IP=${SERVER_IP:-$(curl -4fsS --max-time 6 https://api.ipify.org || curl -4fsS --max-time 6 https://ipinfo.io/ip || curl -4fsS --max-time 6 https://ip.sb || true)}
 [ -n "$IP" ] || { echo "获取公网 IP 失败，请用 SERVER_IP=x.x.x.x 重试"; exit 1; }
 
 # ---- 配置 ----
