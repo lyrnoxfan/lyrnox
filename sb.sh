@@ -76,7 +76,7 @@ cat > config.json <<EOF
         "enabled": true, "server_name": "$SNI",
         "reality": {
           "enabled": true,
-          "handshake": {"server": "$SNI", "server_port": 443},
+          "handshake": {"server": "127.0.0.1", "server_port": 8443},
           "private_key": "$PRIV", "short_id": ["$SID"]
         }
       }
@@ -86,6 +86,34 @@ cat > config.json <<EOF
 }
 EOF
 $SB check -c config.json
+
+# ---- 堵回落：无效连接只给本地空页，不再转给真站 ----
+# REALITY 会把无凭证的连接原样转给 handshake 服务器；指向真站等于给陌生人当免费中继
+# （ali-hk 曾因此一夜被刷 4.19GB）。DESTFIX=0 可关掉本节，恢复旧行为。
+if [ "${DESTFIX:-1}" = 1 ]; then
+  command -v nginx >/dev/null || apt-get install -y -qq nginx openssl >/dev/null 2>&1
+  mkdir -p $D/dest
+  NEWCERT=0
+  if [ ! -f $D/dest/cert.pem ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout $D/dest/key.pem \
+      -out $D/dest/cert.pem -days 3650 -subj "/CN=$SNI" 2>/dev/null && NEWCERT=1
+    printf '<html><body></body></html>' > $D/dest/index.html
+  fi
+  cat > /etc/nginx/sites-enabled/sb-destfix <<EOF
+server {
+  listen 127.0.0.1:8443 ssl;
+  server_name $SNI;
+  ssl_certificate $D/dest/cert.pem;
+  ssl_certificate_key $D/dest/key.pem;
+  root $D/dest;
+}
+EOF
+  systemctl enable --now nginx >/dev/null 2>&1
+  if [ "$NEWCERT" = 1 ] || ! ss -ltnH | grep -q '127.0.0.1:8443 '; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null \
+      || echo "警告：nginx 未能启动（不影响节点正常使用；无效连接会被直接拒绝）"
+  fi
+fi
 
 # ---- systemd：服务（启动时幂等放行本机 iptables 的 TCP 443）+ 每日更新（北京 05:00 = UTC 21:00）----
 cat > /etc/systemd/system/sing-box.service <<EOF
